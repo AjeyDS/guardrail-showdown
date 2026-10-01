@@ -6,6 +6,12 @@
 
 guardrail-showdown is a guardrail evaluation harness. You describe what to detect (a task), plug in guardrails, and it scores them on accuracy, speed, cost and whether their confidence can be trusted. Task #1 is prompt injection, and the results below come from it. You can add a task (toxicity, PII, off-topic, ...) with one config file and a CSV: see [Tasks](#tasks).
 
+**Verdict in short**
+
+- **Common, direct attacks: a free local classifier (ProtectAI) kept up with the paid options at a fraction of the latency.**
+- **Realistic prompts (hidden instructions, safe questions that sound dangerous): Jev and Luna caught the most attacks and blocked no safe prompts. Jev pulled clearly ahead once its cut-off was tuned.**
+- **Before trusting any guardrail, write down your definition of an attack and check its cut-off and confidence on your own data. None of the guardrails that give a confidence score were well calibrated.**
+
 This is an independent, reproducible benchmark of five ways to catch prompt injection: a regex filter, ProtectAI's open classifier, TypeSafe's Jev (released Sep 2026), GPT-6 Luna used as an LLM judge, and Lakera Guard. We ran them on a public dataset and on a hard set of realistic prompts. Every raw API response is cached in the repo, so you can rebuild every number and chart for free.
 
 ![On the hard set, per 1,000 messages](results/visuals/per_1000_messages_hard.png)
