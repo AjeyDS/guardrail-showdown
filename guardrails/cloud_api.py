@@ -17,6 +17,7 @@ METHOD = "lakera"
 DISPLAY_NAME = "Lakera Guard"
 LOCAL = False
 REQUIRES_KEYS: list[str] = ["LAKERA_API_KEY"]
+TASKS: list[str] = ["prompt_injection"]  # built for this task only
 
 URL = "https://api.lakera.ai/v2/guard"
 
@@ -64,5 +65,5 @@ class Lakera:
         return Verdict(flagged, None, res.latency_ms, None, None, raw)
 
 
-def make() -> Lakera:
+def make(task=None) -> Lakera:  # `task` is accepted and ignored
     return Lakera()

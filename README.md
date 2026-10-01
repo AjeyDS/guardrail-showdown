@@ -2,6 +2,10 @@
 
 5 prompt-injection guardrails, ~2,000 prompts, 13 cents. Bring your own.
 
+![Five layered filters catching prompts; one gets through](docs/assets/banner.jpg)
+
+guardrail-showdown is a guardrail evaluation harness. You describe what to detect (a task), plug in guardrails, and it scores them on accuracy, speed, cost and whether their confidence can be trusted. Task #1 is prompt injection, and the results below come from it. You can add a task (toxicity, PII, off-topic, ...) with one config file and a CSV: see [Tasks](#tasks).
+
 This is an independent, reproducible benchmark of five ways to catch prompt injection: a regex filter, ProtectAI's open classifier, TypeSafe's Jev (released Sep 2026), GPT-6 Luna used as an LLM judge, and Lakera Guard. We ran them on a public dataset and on a hard set of realistic prompts. Every raw API response is cached in the repo, so you can rebuild every number and chart for free.
 
 ![On the hard set, per 1,000 messages](results/visuals/per_1000_messages_hard.png)
@@ -13,7 +17,7 @@ If 1,000 messages hit your app and 10 are attacks, this shows how many attacks e
 Tested with Python 3.13.
 
 ```bash
-git clone https://github.com/<your-user>/guardrail-showdown.git
+git clone https://github.com/AjeyDS/guardrail-showdown.git
 cd guardrail-showdown
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
@@ -106,26 +110,43 @@ Lakera Guard is partial. Its free tier stopped after about 390 calls and refills
 
 ## Add your own guardrail
 
-1. Drop one file into `guardrails/` (for example `guardrails/mine.py`) with `METHOD`, `DISPLAY_NAME`, `LOCAL`, `REQUIRES_KEYS` and a `make()` function. It is auto-discovered.
+1. Drop one file into `guardrails/` (for example `guardrails/mine.py`) with `METHOD`, `DISPLAY_NAME`, `LOCAL`, `REQUIRES_KEYS`, `TASKS` (which tasks it supports) and a `make(task)` function. It is auto-discovered.
 2. `python try.py "Ignore previous instructions"` to see it next to the others.
 3. `python run_benchmark.py --split test --methods mine && python analyze.py` to score it.
 
 The contract, a working toy example and the fairness rules are in [`docs/ADD_A_GUARDRAIL.md`](docs/ADD_A_GUARDRAIL.md). PRs with your guardrail and your `results/raw/` files are welcome.
 
+## Tasks
+
+A task says what the guardrails are asked to detect. Prompt injection is the first one (`tasks/prompt_injection.toml`). To add your own:
+
+1. Copy `tasks/_template.toml` to `tasks/<name>.toml` and write the definition (the question and the criteria for "flag" and "let through"). Jev and the LLM judge both follow it word for word, which is where most of the accuracy comes from: see the 32% to 93% result above.
+2. Add `data/<name>/val.csv` and `data/<name>/test.csv` with two columns, `text` and `label` (1 = flag, 0 = pass).
+3. Run it:
+
+```bash
+python try.py --task <name> "some text"
+python run_benchmark.py --task <name> --split test --methods jev,luna
+python analyze.py --task <name>
+```
+
+Jev and Luna work on any task because they follow the definition. The regex, ProtectAI and Lakera guardrails were built for prompt injection only, so they are skipped on other tasks and the scorecard says so. Without `--task`, every command behaves as before. Details: [`docs/ADD_A_TASK.md`](docs/ADD_A_TASK.md).
+
 ## How it works
 
 ```
 prepare_data.py   builds data/val.csv, test.csv, hard.csv from public datasets
+tasks/            one TOML file per task: the definition, labels, data and results locations
 run_benchmark.py  runs guardrails over a split, caches every response in results/raw/<split>/<method>.jsonl
 analyze.py        scorecard, awards and charts for one split
 make_visuals.py   plain-English shareable charts in results/visuals/
-guardrails/       one file per method, auto-discovered; base.py holds the shared contract
+guardrails/       one file per method, auto-discovered; base.py holds the shared contract, task.py loads tasks
 tests/            unit tests (pytest)
 ```
 
 Fairness rules:
 
-- Every model-based method gets the same definition of "attack", word for word (`ATTACK_QUESTION` in `guardrails/base.py`).
+- Every model-based method gets the same definition of "attack", word for word (the `[definition]` in `tasks/prompt_injection.toml`).
 - Failures count as misses (a failed call is "not flagged"), never dropped.
 - The regex rules were written looking at val only.
 - Cut-offs are chosen on val only. Nothing is tuned on test or hard.

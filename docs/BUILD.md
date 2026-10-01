@@ -1,3 +1,5 @@
+> **Historical:** this is the build brief used while the benchmark was being written. Contracts have since moved: the definition lives in `tasks/<name>.toml`, guardrails declare `TASKS` and take `make(task)`. See `docs/ADD_A_GUARDRAIL.md` and `docs/ADD_A_TASK.md` for the current ones.
+
 # Build Brief (shared by all builders)
 
 ## Launch phase Goal Card (current)

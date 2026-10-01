@@ -47,9 +47,9 @@ def test_file_loads_guardrail_once_and_failures_render_as_error(tmp_path, monkey
     loads = []
     real_load = registry.load
 
-    def counting_load(m):
+    def counting_load(m, task=None):
         loads.append(m)
-        return real_load(m)
+        return real_load(m, task)
 
     monkeypatch.setattr(registry, "load", counting_load)
     assert try_cli.main(["--methods", "regex", "--file", str(f)]) == 0
@@ -57,7 +57,7 @@ def test_file_loads_guardrail_once_and_failures_render_as_error(tmp_path, monkey
     assert loads == ["regex"]
     assert "[1/2]" in out and "[2/2]" in out and "BLOCK" in out and "PASS" in out
 
-    monkeypatch.setattr(registry, "load", lambda m: (_ for _ in ()).throw(RuntimeError("boom sk-secret")))
+    monkeypatch.setattr(registry, "load", lambda m, task=None: (_ for _ in ()).throw(RuntimeError("boom sk-secret")))
     assert try_cli.main(["--methods", "regex", "hi"]) == 0
     out = capsys.readouterr().out
     assert "ERROR" in out and "load failed" in out
@@ -73,7 +73,7 @@ def test_guardrail_error_never_raises_and_secrets_scrubbed(monkeypatch, capsys):
         def check(self, prompt):
             return Verdict(None, None, 12.0, error="http_401: bad key sk-supersecret")
 
-    monkeypatch.setattr(registry, "load", lambda m: Bad())
+    monkeypatch.setattr(registry, "load", lambda m, task=None: Bad())
     assert try_cli.main(["--methods", "jev", "hi"]) == 0
     out = capsys.readouterr().out
     assert "ERROR" in out and "sk-supersecret" not in out
@@ -89,3 +89,16 @@ def test_color_only_on_tty(monkeypatch):
 def test_needs_a_prompt():
     with pytest.raises(SystemExit):
         try_cli.main([])
+
+
+def test_task_option_filters_methods(tmp_path, monkeypatch, capsys):
+    from guardrails import task as task_mod
+    (tmp_path / "toxicity.toml").write_text((ROOT / "tasks" / "_template.toml").read_text())
+    monkeypatch.setattr(task_mod, "TASKS_DIR", tmp_path)
+    with pytest.raises(SystemExit):  # regex is built for prompt_injection only
+        try_cli.main(["--task", "toxicity", "--methods", "regex", "hello"])
+    assert "do not support task 'toxicity'" in capsys.readouterr().err
+    assert try_cli.main(["--task", "toxicity", "hello"]) == 2  # jev/luna need keys: all skipped
+    assert "skipped jev" in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        try_cli.main(["--task", "nope", "hello"])

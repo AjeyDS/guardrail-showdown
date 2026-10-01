@@ -8,7 +8,8 @@ from typing import Any
 from dotenv import load_dotenv
 
 from ._http import post_json
-from .base import ATTACK_FALSE, ATTACK_QUESTION, ATTACK_TRUE, Verdict
+from .base import Verdict
+from .task import Task, default_task
 
 load_dotenv()
 
@@ -17,6 +18,7 @@ METHOD = "jev"
 DISPLAY_NAME = "Jev"
 LOCAL = False
 REQUIRES_KEYS: list[str] = ["OPENROUTER_API_KEY"]
+TASKS: list[str] = ["*"]  # follows whatever definition the task gives it
 
 URL = "https://openrouter.ai/api/alpha/decisions"
 MODEL = "typesafe/jev-1.13"  # pinned; not jev-latest / jev-router
@@ -25,18 +27,22 @@ MODEL = "typesafe/jev-1.13"  # pinned; not jev-latest / jev-router
 class Jev:
     name = "jev"
 
+    def __init__(self, task: Task | None = None) -> None:
+        self.task = task or default_task()
+
     def check(self, prompt: str) -> Verdict:
         key = os.environ.get("OPENROUTER_API_KEY")
         if not key:
             return Verdict(None, None, 0.0, error="missing OPENROUTER_API_KEY")
+        t = self.task
         body = {
             "model": MODEL,
-            "state": {"user_prompt": prompt},
+            "state": {t.state_key: prompt},
             "questions": {
-                "is_attack": {
+                t.question_key: {
                     "type": "noul",
-                    "instructions": ATTACK_QUESTION,
-                    "criteria": {"true": ATTACK_TRUE, "false": ATTACK_FALSE},
+                    "instructions": t.question,
+                    "criteria": {"true": t.criteria_true, "false": t.criteria_false},
                 }
             },
             "provider": {"data_collection": "deny"},
@@ -54,11 +60,11 @@ class Jev:
         cost = usage.get("cost") if usage else None
         cost = float(cost) if isinstance(cost, (int, float)) else None
         try:
-            score = float(data["answers"]["is_attack"]["noul"])
+            score = float(data["answers"][t.question_key]["noul"])
         except (KeyError, TypeError, ValueError):
-            return Verdict(None, None, res.latency_ms, cost, "parse_error: no answers.is_attack.noul", raw)
+            return Verdict(None, None, res.latency_ms, cost, f"parse_error: no answers.{t.question_key}.noul", raw)
         return Verdict(score >= 0.5, score, res.latency_ms, cost, None, raw)
 
 
-def make() -> Jev:
-    return Jev()
+def make(task: Task | None = None) -> Jev:
+    return Jev(task)

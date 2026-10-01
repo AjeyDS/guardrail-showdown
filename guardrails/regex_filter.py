@@ -21,6 +21,7 @@ METHOD = "regex"
 DISPLAY_NAME = "Regex"
 LOCAL = True
 REQUIRES_KEYS: list[str] = []
+TASKS: list[str] = ["prompt_injection"]  # built for this task only
 
 _F = re.IGNORECASE
 _GAP = r"(?:\W+\w+){0,3}?\W+"  # up to three filler words, e.g. "all of your"
@@ -138,5 +139,5 @@ class RegexFilter:
                        cost_usd=0.0, raw={"matched": matched})
 
 
-def make() -> RegexFilter:
+def make(task=None) -> RegexFilter:  # `task` is accepted and ignored
     return RegexFilter()

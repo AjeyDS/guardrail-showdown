@@ -17,6 +17,7 @@ METHOD = "protectai"
 DISPLAY_NAME = "ProtectAI"
 LOCAL = True
 REQUIRES_KEYS: list[str] = []
+TASKS: list[str] = ["prompt_injection"]  # built for this task only
 
 MODEL_ID = "protectai/deberta-v3-base-prompt-injection-v2"
 ATTACK_LABEL = "INJECTION"
@@ -71,5 +72,5 @@ class ProtectAIClassifier:
                            cost_usd=0.0, error=f"{type(exc).__name__}: {str(exc)[:120]}")
 
 
-def make() -> ProtectAIClassifier:
+def make(task=None) -> ProtectAIClassifier:  # `task` is accepted and ignored
     return ProtectAIClassifier()

@@ -73,3 +73,61 @@ def test_drop_in_module_is_discovered_and_bad_one_warned(tmp_path, monkeypatch):
         infos = registry.discover()
     assert list(infos) == ["toy"] and infos["toy"].module == "guardrails.toy"
     assert any("half.py" in str(x.message) for x in w)
+
+
+# ---- tasks -------------------------------------------------------------------
+def test_tasks_metadata_of_the_builtins():
+    infos = registry.discover()
+    assert {m: i.tasks for m, i in infos.items()} == {
+        "regex": ["prompt_injection"], "protectai": ["prompt_injection"], "lakera": ["prompt_injection"],
+        "jev": ["*"], "luna": ["*"],
+    }
+
+
+def test_discover_filters_by_task():
+    assert list(registry.discover("prompt_injection")) == ["regex", "protectai", "jev", "luna", "lakera"]
+    assert list(registry.discover("toxicity")) == ["jev", "luna"]  # task-agnostic ones only
+    from guardrails.task import load_task
+    assert list(registry.discover(load_task("prompt_injection"))) == list(registry.discover())
+
+
+def test_missing_tasks_means_prompt_injection_and_bad_tasks_warn(tmp_path, monkeypatch):
+    base = 'METHOD = "{m}"\nDISPLAY_NAME = "T"\nLOCAL = True\nREQUIRES_KEYS: list[str] = []\n{extra}def make():\n    return None\n'
+    (tmp_path / "old.py").write_text(base.format(m="old", extra=""))
+    (tmp_path / "any.py").write_text(base.format(m="any", extra='TASKS: list[str] = ["*"]\n'))
+    (tmp_path / "bad.py").write_text(base.format(m="bad", extra='TASKS = "toxicity"\n'))
+    monkeypatch.setattr(registry, "GUARDRAILS_DIR", tmp_path)
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        assert list(registry.discover("prompt_injection")) == ["any", "old"]
+        assert list(registry.discover("toxicity")) == ["any"]
+    assert any("bad.py" in str(x.message) and "TASKS" in str(x.message) for x in w)
+
+
+def test_load_passes_the_task_only_to_makers_that_take_it(tmp_path, monkeypatch):
+    (tmp_path / "plain.py").write_text(
+        'METHOD = "plain"\nDISPLAY_NAME = "P"\nLOCAL = True\nREQUIRES_KEYS: list[str] = []\nTASKS: list[str] = ["*"]\n'
+        "def make():\n    return 'no-arg'\n")
+    (tmp_path / "taskful.py").write_text(
+        'METHOD = "taskful"\nDISPLAY_NAME = "T"\nLOCAL = True\nREQUIRES_KEYS: list[str] = []\nTASKS: list[str] = ["*"]\n'
+        "def make(task=None):\n    return ('got', getattr(task, 'name', None))\n")
+    monkeypatch.setattr(registry, "GUARDRAILS_DIR", tmp_path)
+    monkeypatch.setattr(registry.importlib, "import_module", lambda name: _load(tmp_path, name))
+    from guardrails.task import load_task
+    task = load_task("prompt_injection")
+    assert registry.load("plain", task) == "no-arg"
+    assert registry.load("taskful", task) == ("got", "prompt_injection")
+    assert registry.load("taskful") == ("got", None)
+
+
+def _load(tmp_path, name):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name, tmp_path / (name.split(".")[-1] + ".py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_load_rejects_a_task_the_method_does_not_support():
+    with pytest.raises(ValueError, match="does not support task 'toxicity'"):
+        registry.load("regex", "toxicity")

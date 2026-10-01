@@ -1,7 +1,12 @@
 """Shareable, plain-English charts for the guardrail benchmark.
 
-    .venv/bin/python make_visuals.py [--results results/results.csv] [--out results/visuals]
-                                     [--data data]
+    .venv/bin/python make_visuals.py [--task prompt_injection] [--results results/results.csv]
+                                     [--out results/visuals] [--data data]
+
+Default paths come from the task's `results_dir` / `data_dir` (tasks/<task>.toml)
+and the words for the two classes from its labels. Charts whose inputs are absent
+(the one-sentence chart needs results/archive/, the example prompts need a hard
+split with hand-written rows) are skipped.
 
 Every number comes from `results/` and `data/` files; rates are computed with the
 pure functions in analyze.py so the visuals always agree with the scorecards.
@@ -27,6 +32,8 @@ import pandas as pd  # noqa: E402
 from matplotlib.patches import Circle, Polygon, Rectangle  # noqa: E402
 
 import analyze as an  # noqa: E402
+from guardrails import registry  # noqa: E402
+from guardrails.task import DEFAULT_TASK, Task, TaskError, default_task, load_task, show  # noqa: E402
 
 # --------------------------------------------------------------------------
 # House style
@@ -40,8 +47,6 @@ TEAL = "#2E8B7A"
 
 DISPLAY = {"regex": "Regex", "protectai": "ProtectAI", "jev": "Jev",
            "luna": "Luna (GPT-6)", "lakera": "Lakera Guard"}
-SHOWN = ["regex", "protectai", "jev", "luna"]  # test/hard visuals (no lakera)
-SCORED = ["protectai", "jev", "luna"]
 SUBJECT = "jev"  # the write-up's subject: slightly bolder, never a "better" colour
 
 DPI = 200
@@ -53,10 +58,29 @@ N_ATTACKS = 10        # "... and 10 are attacks"
 
 LAKERA_NOTE = "Lakera Guard is left out: only partial data."
 SPLIT_LABEL = {"test": "test set", "hard": "hard set"}
+PARTIAL = "lakera"  # left out of the test/hard visuals (partial data), see load_data
 
 
 def name_of(m: str) -> str:
-    return DISPLAY.get(m, m)
+    if m in DISPLAY:
+        return DISPLAY[m]
+    try:
+        return registry.discover()[m].display_name
+    except KeyError:
+        return m
+
+
+def note(nl: pd.DataFrame) -> str:
+    """The 'Lakera is left out' footnote, only when Lakera is in the results."""
+    return LAKERA_NOTE if nl.attrs.get("lakera_left_out", True) else ""
+
+
+def join(*parts: str) -> str:
+    return " ".join(p for p in parts if p)
+
+
+def cap(text: str) -> str:
+    return text[:1].upper() + text[1:]
 
 
 # --------------------------------------------------------------------------
@@ -217,31 +241,41 @@ def glyph_ok(ch: str) -> bool:
 # --------------------------------------------------------------------------
 # Data loading
 # --------------------------------------------------------------------------
-def load_data(results_path: Path) -> dict:
-    full = an.load_results(results_path)
-    return {"all": full, "nl": full[full["method"] != "lakera"].copy()}
+def load_data(results_path: Path, task: Task | None = None) -> dict:
+    full = an.load_results(results_path, task)
+    nl = full[full["method"] != PARTIAL].copy()
+    nl.attrs["lakera_left_out"] = bool((full["method"] == PARTIAL).any())
+    return {"all": full, "nl": nl}
+
+
+def ordered(methods) -> list:
+    """Known methods in their usual order, then any others alphabetically."""
+    present = set(methods)
+    return [m for m in an.METHOD_ORDER if m in present] + sorted(present - set(an.METHOD_ORDER))
+
+
+def methods_in(nl: pd.DataFrame, split: str) -> list:
+    return ordered(nl.loc[nl["split"] == split, "method"])
 
 
 def split_sizes(nl: pd.DataFrame, split: str) -> tuple:
-    g = nl[(nl["split"] == split) & (nl["method"] == SHOWN[0])]
+    ms = methods_in(nl, split)
+    g = nl[(nl["split"] == split) & (nl["method"] == ms[0])] if ms else nl.iloc[0:0]
     return len(g), int((g["label"] == 1).sum()), int((g["label"] == 0).sum())
-
-
-def methods_in(nl: pd.DataFrame, split: str, pool=SHOWN) -> list:
-    present = set(nl.loc[nl["split"] == split, "method"])
-    return [m for m in pool if m in present]
 
 
 # --------------------------------------------------------------------------
 # 1. Confusion matrices
 # --------------------------------------------------------------------------
-def plot_confusion(nl: pd.DataFrame, split: str, path: Path):
+def plot_confusion(nl: pd.DataFrame, split: str, path: Path, task: Task | None = None):
+    task = task or default_task()
+    pos, safe = task.positive_label, task.neg_adj
     n, n_att, n_safe = split_sizes(nl, split)
     ms = methods_in(nl, split)
     cv = Canvas(WIDE, "Where each guardrail gets it right and wrong",
-                f"{SPLIT_LABEL[split].capitalize()}: {n:,} prompts ({n_att:,} attacks, {n_safe:,} safe), "
-                "default settings", f"{LAKERA_NOTE} Percentages are within each row. "
-                "A failed call counts as let through.")
+                f"{SPLIT_LABEL[split].capitalize()}: {n:,} prompts ({n_att:,} {task.pos_plural}, {n_safe:,} {safe}), "
+                "default settings", join(note(nl), "Percentages are within each row. "
+                "A failed call counts as let through."))
     ax, k = cv.ax, cv.k
     x0, x1 = cv.margin, cv.w - cv.margin
     y_top, y_bot = cv.top, cv.bottom
@@ -265,13 +299,13 @@ def plot_confusion(nl: pd.DataFrame, split: str, path: Path):
                     va="center", ha="center")
         cells = [
             # row 0: really an attack
-            [("Attack blocked", c["tp"], c["n_attacks"], True),
-             ("Attack missed", c["fn"], c["n_attacks"], False)],
+            [(f"{cap(pos)} blocked", c["tp"], c["n_attacks"], True),
+             (f"{cap(pos)} missed", c["fn"], c["n_attacks"], False)],
             # row 1: really safe
-            [("Safe user wrongly blocked", c["fp"], c["n_safe"], False),
-             ("Safe user passed", c["tn"], c["n_safe"], True)],
+            [(f"{cap(safe)} user wrongly blocked", c["fp"], c["n_safe"], False),
+             (f"{cap(safe)} user passed", c["tn"], c["n_safe"], True)],
         ]
-        rows_lab = (("Attacks", c["n_attacks"]), ("Safe", c["n_safe"]))
+        rows_lab = ((cap(task.pos_plural), c["n_attacks"]), (cap(safe), c["n_safe"]))
         for r in range(2):
             cy_top = py - hdr - 0.04 - r * chh
             ax.text(px, cy_top - chh / 2 + 0.07, rows_lab[r][0], fontsize=11.5 * k, color=INK,
@@ -300,7 +334,8 @@ def plot_confusion(nl: pd.DataFrame, split: str, path: Path):
 # --------------------------------------------------------------------------
 # 2. Per 1,000 messages
 # --------------------------------------------------------------------------
-def plot_per_1000(nl: pd.DataFrame, split: str, path: Path, size=WIDE):
+def plot_per_1000(nl: pd.DataFrame, split: str, path: Path, size=WIDE, task: Task | None = None):
+    task = task or default_task()
     n, n_att, n_safe = split_sizes(nl, split)
     ms = methods_in(nl, split)
     stats = {}
@@ -311,9 +346,9 @@ def plot_per_1000(nl: pd.DataFrame, split: str, path: Path, size=WIDE):
     title = ("Per 1,000 messages: what each one gets wrong" if split == "test"
              else "On the hard set, per 1,000 messages")
     cv = Canvas(size, title,
-                f"If 1,000 messages hit your app and 10 are attacks ({SPLIT_LABEL[split]} rates, "
+                f"If 1,000 messages hit your app and 10 are {task.pos_plural} ({SPLIT_LABEL[split]} rates, "
                 f"{n:,} prompts).",
-                f"Expected values from measured rates; real traffic differs. {LAKERA_NOTE}")
+                join("Expected values from measured rates; real traffic differs.", note(nl)))
     ax, k = cv.ax, cv.k
     wide = cv.w >= 7
     x0, x1 = cv.margin, cv.w - cv.margin
@@ -334,7 +369,7 @@ def plot_per_1000(nl: pd.DataFrame, split: str, path: Path, size=WIDE):
         block_h = (y_top - y_bot - hdr_h) / len(ms)
         usr_h = min(0.13, (block_h - 0.1) / rows_needed / 1.08)
         hy = y_top - 0.02
-        ax.text(icons_x - num_w, hy, "Attacks missed", fontsize=11.5 * k, color=INK,
+        ax.text(icons_x - num_w, hy, f"{cap(task.pos_plural)} missed", fontsize=11.5 * k, color=INK,
                 fontweight="bold", va="top")
         ax.text(icons_x - num_w, hy - 0.2, "out of 10", fontsize=10.5 * k, color=GREY, va="top")
         ax.text(usr_num_x - num_w, hy, "Real users wrongly blocked", fontsize=11.5 * k, color=INK,
@@ -371,7 +406,7 @@ def plot_per_1000(nl: pd.DataFrame, split: str, path: Path, size=WIDE):
         per_row = max(1, int((x1 - usr_x) / usr_sp))
         rows_needed = max(1, math.ceil(max_users / per_row))
         key_h = 0.42
-        ax.text(x0, y_top, "Top row: attacks missed, out of 10.\nBottom row: real users wrongly "
+        ax.text(x0, y_top, f"Top row: {task.pos_plural} missed, out of 10.\nBottom row: real users wrongly "
                 "blocked, out of 990.", fontsize=10 * k, color=GREY, va="top", linespacing=1.3)
         block_h = (y_top - y_bot - key_h) / len(ms)
         usr_h = min(0.12, (block_h - att_h - 0.16) / rows_needed / 1.08)
@@ -412,7 +447,10 @@ def _row_band(ax, m, x, cy, w, h):
 # 3. One sentence
 # --------------------------------------------------------------------------
 def one_sentence_data(results_dir: Path, data_dir: Path) -> dict:
-    labels = pd.read_csv(Path(data_dir) / "val.csv").set_index("row_id")["label"]
+    val = pd.read_csv(Path(data_dir) / "val.csv")
+    if "row_id" not in val.columns:  # same rule as run_benchmark.load_split
+        val.insert(0, "row_id", range(len(val)))
+    labels = val.set_index("row_id")["label"]
     out = {}
     for m in ("jev", "luna"):
         old = load_jsonl_latest(Path(results_dir) / "archive" / f"val_{m}_narrow_def.jsonl")
@@ -428,7 +466,8 @@ def _legend(cv, x, y, items, step):
         x += step
 
 
-def plot_one_sentence(eff: dict, path: Path, size=WIDE):
+def plot_one_sentence(eff: dict, path: Path, size=WIDE, task: Task | None = None, nl=None):
+    task = task or default_task()
     luna = eff["luna"]
     n, n_att, n_safe = luna["n"], luna["n_attacks"], luna["n_safe"]
     title = (f"One sentence in the definition moved Luna from {100 * luna['catch_old']:.0f}% "
@@ -436,10 +475,11 @@ def plot_one_sentence(eff: dict, path: Path, size=WIDE):
     fb = ", ".join(f"{name_of(m).split(' (')[0]} {eff[m]['fb_old']} then {eff[m]['fb_new']}"
                    for m in ("jev", "luna"))
     cv = Canvas(size, title,
-                f"Same {n} validation prompts ({n_att} attacks, {n_safe} safe): share of attacks blocked.",
-                f"Small sample: with {n_att} attacks, one prompt moves a bar by about "
-                f"{100 / n_att:.0f} points. Safe prompts wrongly blocked (of {n_safe}), before then "
-                f"after: {fb}. {LAKERA_NOTE}")
+                f"Same {n} validation prompts ({n_att} {task.pos_plural}, {n_safe} {task.neg_adj}): "
+                f"share of {task.pos_plural} blocked.",
+                join(f"Small sample: with {n_att} {task.pos_plural}, one prompt moves a bar by about "
+                     f"{100 / n_att:.0f} points. {cap(task.neg_plural)} wrongly blocked (of {n_safe}), before then "
+                     f"after: {fb}.", note(nl) if nl is not None else LAKERA_NOTE))
     k = cv.k
     leg_y = cv.top - 0.12
     _legend(cv, cv.margin + 0.55, leg_y, ((GREY, "Before: narrow definition"),
@@ -476,31 +516,34 @@ def plot_one_sentence(eff: dict, path: Path, size=WIDE):
 # --------------------------------------------------------------------------
 # 4. Default vs tuned cut-off
 # --------------------------------------------------------------------------
-def tuned_rows(nl: pd.DataFrame) -> list:
+def tuned_rows(nl: pd.DataFrame, task: Task | None = None) -> list:
     """[(split, method, catch@0.5, catch@val-cutoff, fbr@0.5, fbr@val-cutoff)] for scored methods."""
     out = []
     for split in ("test", "hard"):
         if not (nl["split"] == split).any():
             continue
-        res = an.analyze(nl, split, "val")
-        for m in SCORED:
+        res = an.analyze(nl, split, "val", task)
+        for m in res["methods"]:  # methods without a score have no cut-off to tune
             r = res["rows"].get(m)
             if r and r.get("at1_status") == "ok":
                 out.append((split, m, r["catch"], r["at1"], r["fbr"], r["at1_fbr"]))
     return out
 
 
-def plot_default_vs_tuned(nl: pd.DataFrame, path: Path):
-    rows = tuned_rows(nl)
+def plot_default_vs_tuned(nl: pd.DataFrame, path: Path, task: Task | None = None):
+    task = task or default_task()
+    rows = tuned_rows(nl, task)
+    if not rows:  # no scored method with a val run: nothing to show
+        return rows, None
     best = max(rows, key=lambda r: (round(r[3] - r[2], 9), r[1]))
     sizes = {s: split_sizes(nl, s) for s in ("test", "hard")}
     title = (f"Tuning {name_of(best[1]).split(' (')[0]}'s cut-off on practice data lifted its catch "
              f"rate from {100 * best[2]:.1f}% to {100 * best[3]:.1f}%")
     cv = Canvas(WIDE, title,
                 f"Biggest jump, on the {SPLIT_LABEL[best[0]]}. Cut-off chosen on val to wrongly block "
-                f"at most {int(an.FBR_BUDGET * 100)}% of safe prompts.",
-                f"{LAKERA_NOTE} Catching more usually means wrongly blocking more real users: the "
-                "right-hand column shows safe prompts wrongly blocked, default to tuned.")
+                f"at most {int(an.FBR_BUDGET * 100)}% of {task.neg_plural}.",
+                join(note(nl), "Catching more usually means wrongly blocking more real users: the "
+                     f"right-hand column shows {task.neg_plural} wrongly blocked, default to tuned."))
     k = cv.k
     _legend(cv, cv.margin + 1.35, cv.top - 0.1, ((GREY, "Default cut-off (0.5)"),
                                                  (INK, "Cut-off tuned on val")), 2.5)
@@ -547,7 +590,7 @@ def plot_default_vs_tuned(nl: pd.DataFrame, path: Path):
         axp.text(0.0, hi_y + 0.9, f"{SPLIT_LABEL[split].capitalize()} ({n:,} prompts)",
                  transform=yax, ha="left", va="center", fontsize=12 * k, color=GREY,
                  fontweight="bold")
-    axp.text(1.03, max(ys) + 0.9, "Safe blocked", transform=yax, ha="left", va="center",
+    axp.text(1.03, max(ys) + 0.9, f"{cap(task.neg_adj)} blocked", transform=yax, ha="left", va="center",
              fontsize=11.5 * k, color=GREY, fontweight="bold")
     axp.set_xlim(0, xmax)
     axp.set_ylim(-0.6, max(ys) + 1.3)
@@ -583,15 +626,16 @@ def example_table(nl: pd.DataFrame, data_dir: Path) -> tuple:
     return chosen, hand, verdict, ms
 
 
-def plot_example_prompts(nl: pd.DataFrame, data_dir: Path, path: Path):
+def plot_example_prompts(nl: pd.DataFrame, data_dir: Path, path: Path, task: Task | None = None):
+    task = task or default_task()
     chosen, hand, verdict, ms = example_table(nl, data_dir)
     ok_g, bad_g = ("✓", "✗") if glyph_ok("✓") and glyph_ok("✗") else ("OK", "X")
     n_att = sum(int(hand.loc[r, "label"]) == 1 for r in chosen)
     cv = Canvas(WIDE, "Same tricky prompts, very different verdicts",
                 f"Hand-written hard-set prompts the guardrails disagreed on most "
-                f"({n_att} attacks, {len(chosen) - n_att} safe).",
-                f"{ok_g} = right call, {bad_g} = wrong call. Picked for disagreement, so this is not "
-                f"a typical sample; ties go to the lower row id. {LAKERA_NOTE}")
+                f"({n_att} {task.pos_plural}, {len(chosen) - n_att} {task.neg_adj}).",
+                join(f"{ok_g} = right call, {bad_g} = wrong call. Picked for disagreement, so this is not "
+                     f"a typical sample; ties go to the lower row id.", note(nl)))
     ax, k = cv.ax, cv.k
     x0, x1 = cv.margin, cv.w - cv.margin
     col_w = 0.78
@@ -635,31 +679,34 @@ def plot_example_prompts(nl: pd.DataFrame, data_dir: Path, path: Path):
 # --------------------------------------------------------------------------
 # 6. Speed vs cost
 # --------------------------------------------------------------------------
-def speed_cost_points(df_all: pd.DataFrame) -> dict:
-    nl = df_all[df_all["method"] != "lakera"]
+def speed_cost_points(df_all: pd.DataFrame, task: Task | None = None) -> dict:
+    nl = df_all[df_all["method"] != PARTIAL]
     pts = {}
-    for m in SHOWN:
+    for m in methods_in(nl, "test"):
         g = nl[(nl["split"] == "test") & (nl["method"] == m)]
-        if g.empty:
-            continue
-        met = an.method_metrics(m, g)
+        met = an.method_metrics(m, g, task=task)
         pts[m] = {"lat": met["lat_med"], "cost": met["cost_per_m"], "n": len(g)}
-    lk = df_all[(df_all["method"] == "lakera") & (df_all["split"] == "val") & ~df_all["error_flag"]]
-    lat = lk["latency_ms"].dropna()
-    pts["lakera"] = {"lat": float(lat.median()) if len(lat) else math.nan, "cost": math.nan,
-                     "n": len(lat)}
+    lk = df_all[(df_all["method"] == PARTIAL) & (df_all["split"] == "val") & ~df_all["error_flag"]]
+    if (df_all["method"] == PARTIAL).any():
+        lat = lk["latency_ms"].dropna()
+        pts[PARTIAL] = {"lat": float(lat.median()) if len(lat) else math.nan, "cost": math.nan,
+                        "n": len(lat)}
     return pts
 
 
-def plot_speed_vs_cost(df_all: pd.DataFrame, path: Path):
-    pts = speed_cost_points(df_all)
-    n_test = pts["jev"]["n"]
-    j = pts["jev"]
-    title = (f"Free local checkers answer in milliseconds; Jev costs ${j['cost']:.2f} per million checks")
+def plot_speed_vs_cost(df_all: pd.DataFrame, path: Path, task: Task | None = None):
+    pts = speed_cost_points(df_all, task)
+    shown = [m for m in pts if m != PARTIAL]
+    n_test = pts.get("jev", pts[shown[0]])["n"]
+    if "jev" in pts:
+        title = (f"Free local checkers answer in milliseconds; Jev costs ${pts['jev']['cost']:.2f} per million checks")
+    else:
+        title = "Median response time against cost per million checks"
     cv = Canvas(WIDE, title,
                 f"Test set, {n_test:,} prompts per method: median response time vs cost per 1M checks.",
-                f"Cost is projected from real per-call cost; local methods are $0. Lakera Guard has "
-                f"partial data (val subset, {pts['lakera']['n']} successful calls), so no cost is shown.")
+                join("Cost is projected from real per-call cost; local methods are $0.",
+                     f"Lakera Guard has partial data (val subset, {pts[PARTIAL]['n']} successful calls), "
+                     "so no cost is shown." if PARTIAL in pts else ""))
     k = cv.k
     left, right = cv.margin + 0.8, cv.w - cv.margin - 0.1
     axp = cv.fig.add_axes([left / cv.w, (cv.bottom + 0.5) / cv.h, (right - left) / cv.w,
@@ -670,16 +717,14 @@ def plot_speed_vs_cost(df_all: pd.DataFrame, path: Path):
     for s in ("left", "bottom"):
         axp.spines[s].set_color(LIGHT)
     axp.set_xscale("log")
-    top_cost = max(p["cost"] for m, p in pts.items() if m != "lakera")
+    top_cost = max([p["cost"] for m, p in pts.items() if m != PARTIAL] + [1.0])
     axp.set_ylim(-0.5 * top_cost, top_cost * 1.2)
     axp.set_xlim(0.008, 9000)
     axp.axhline(0, color=GREY, lw=1, zorder=1, linestyle=(0, (4, 3)))
     axp.text(0.0125, -0.03 * top_cost, "local = $0 baseline", color=GREY, fontsize=10.5 * k,
              va="top", ha="left")
-    for m in SHOWN:
-        p = pts.get(m)
-        if not p:
-            continue
+    for m in shown:
+        p = pts[m]
         bold = m == SUBJECT
         axp.scatter([p["lat"]], [p["cost"]], s=190 if bold else 150, color=INK, zorder=4,
                     edgecolor=INK, linewidth=0)
@@ -692,8 +737,8 @@ def plot_speed_vs_cost(df_all: pd.DataFrame, path: Path):
             axp.annotate(lab, (p["lat"], p["cost"]), xytext=(14, 0), ha="left", va="center", **kw)
         else:
             axp.annotate(lab, (p["lat"], p["cost"]), xytext=(-14, 0), ha="right", va="center", **kw)
-    lk = pts["lakera"]
-    if not math.isnan(lk["lat"]):
+    lk = pts.get(PARTIAL)
+    if lk and not math.isnan(lk["lat"]):
         axp.scatter([lk["lat"]], [0], s=150, facecolor=BG, edgecolor=INK, linewidth=2, zorder=4)
         axp.annotate(f"Lakera Guard (partial data, free tier)\n{an.fmt_ms(lk['lat'])} ms, cost n/a",
                      (lk["lat"], 0), xytext=(14, -18), textcoords="offset points", ha="right",
@@ -716,18 +761,34 @@ def plot_speed_vs_cost(df_all: pd.DataFrame, path: Path):
 # --------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------
+def _one_sentence_inputs(results_dir: Path) -> bool:
+    return all((results_dir / "archive" / f"val_{m}_narrow_def.jsonl").exists() for m in ("jev", "luna"))
+
+
+def _example_inputs(data_dir: Path) -> bool:
+    path = data_dir / "hard.csv"
+    return path.exists() and "source" in pd.read_csv(path, nrows=0).columns \
+        and (pd.read_csv(path)["source"] == "hand_written").any()
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Make plain-English shareable charts.")
-    p.add_argument("--results", default="results/results.csv")
-    p.add_argument("--out", default="results/visuals")
-    p.add_argument("--data", default="data", help="folder with val.csv and hard.csv")
+    p.add_argument("--task", default=DEFAULT_TASK, help=f"task name: tasks/<task>.toml (default {DEFAULT_TASK})")
+    p.add_argument("--results", default=None, help="results CSV (default: <task results_dir>/results.csv)")
+    p.add_argument("--out", default=None, help="output folder (default: <task results_dir>/visuals)")
+    p.add_argument("--data", default=None, help="folder with val.csv and hard.csv (default: the task's data_dir)")
     a = p.parse_args(argv)
+    try:
+        task = load_task(a.task)
+    except TaskError as e:
+        p.error(str(e))
 
-    results_path = Path(a.results)
+    results_path = Path(a.results) if a.results else task.results_dir / "results.csv"
     results_dir = results_path.parent
-    out = Path(a.out)
+    out = Path(a.out) if a.out else task.results_dir / "visuals"
+    data_dir = Path(a.data) if a.data else task.data_dir
     out.mkdir(parents=True, exist_ok=True)
-    d = load_data(results_path)
+    d = load_data(results_path, task)
     nl, full = d["nl"], d["all"]
     made = []
 
@@ -737,20 +798,28 @@ def main(argv=None) -> int:
 
     for split in ("test", "hard"):
         if (nl["split"] == split).any():
-            plot_confusion(nl, split, done(f"confusion_{split}.png"))
+            plot_confusion(nl, split, done(f"confusion_{split}.png"), task)
     if (nl["split"] == "test").any():
-        plot_per_1000(nl, "test", done("per_1000_messages.png"))
-        plot_per_1000(nl, "test", done("per_1000_messages_square.png"), SQUARE)
+        plot_per_1000(nl, "test", done("per_1000_messages.png"), task=task)
+        plot_per_1000(nl, "test", done("per_1000_messages_square.png"), SQUARE, task)
     if (nl["split"] == "hard").any():
-        plot_per_1000(nl, "hard", done("per_1000_messages_hard.png"))
-        plot_per_1000(nl, "hard", done("per_1000_messages_hard_square.png"), SQUARE)
-    eff = one_sentence_data(results_dir, Path(a.data))
-    plot_one_sentence(eff, done("one_sentence.png"))
-    plot_one_sentence(eff, done("one_sentence_square.png"), SQUARE)
-    plot_default_vs_tuned(nl, done("default_vs_tuned.png"))
-    plot_example_prompts(nl, Path(a.data), done("example_prompts.png"))
-    plot_speed_vs_cost(full, done("speed_vs_cost.png"))
-    print(f"Wrote {len(made)} images to {out}/")
+        plot_per_1000(nl, "hard", done("per_1000_messages_hard.png"), task=task)
+        plot_per_1000(nl, "hard", done("per_1000_messages_hard_square.png"), SQUARE, task)
+    if _one_sentence_inputs(results_dir):
+        eff = one_sentence_data(results_dir, data_dir)
+        plot_one_sentence(eff, done("one_sentence.png"), task=task, nl=nl)
+        plot_one_sentence(eff, done("one_sentence_square.png"), SQUARE, task, nl)
+    else:
+        print(f"skipped one_sentence charts: no val_<method>_narrow_def.jsonl in {results_dir / 'archive'}")
+    if tuned_rows(nl, task):
+        plot_default_vs_tuned(nl, done("default_vs_tuned.png"), task)
+    if _example_inputs(data_dir):
+        plot_example_prompts(nl, data_dir, done("example_prompts.png"), task)
+    else:
+        print(f"skipped example_prompts: needs {data_dir / 'hard.csv'} with `source` = hand_written rows")
+    if (nl["split"] == "test").any():
+        plot_speed_vs_cost(full, done("speed_vs_cost.png"), task)
+    print(f"Wrote {len(made)} images to {show(out)}/")
     for m in made:
         print("  ", m.name)
     return 0

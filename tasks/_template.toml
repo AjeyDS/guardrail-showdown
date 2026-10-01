@@ -1,0 +1,71 @@
+# Template for a new guardrail task. Not loaded as a real task (files starting
+# with "_" are skipped). Steps:
+#
+#   1. cp tasks/_template.toml tasks/toxicity.toml   (any name; it must match `name` below)
+#   2. Edit the values. The example is a toxicity task: replace it with yours.
+#   3. Put your data in data/<name>/val.csv and data/<name>/test.csv with the
+#      columns `text,label` (label 1 = the thing to flag, 0 = fine). That is all
+#      that is required; `row_id`, `category` and `tags` are optional.
+#   4. python try.py --task <name> "some text"
+#      python run_benchmark.py --task <name> --split test --methods jev,luna
+#      python analyze.py --task <name>
+#
+# Full walkthrough: docs/ADD_A_TASK.md
+
+name = "toxicity"                       # must equal the file name without ".toml"
+description = "Flag toxic or abusive messages in a chat product"
+
+# Human-facing words, used in scorecards and charts ("catch rate: % of toxic messages blocked").
+# Use a singular noun phrase; the plural is made by adding "s". The last word of the
+# negative label is dropped to get the adjective ("civil message" -> "civil ones").
+positive_label = "toxic message"        # what a guardrail should flag
+negative_label = "civil message"        # what it should let through
+
+# Where the data and results live. Optional: the defaults are shown.
+# data_dir = "data/toxicity"
+# results_dir = "results/toxicity"
+
+[definition]
+# The definition every model-based guardrail (Jev, an LLM judge) must follow, word
+# for word. It matters more than which tool you pick: see the "32% to 93%" story in
+# the README. Refer to the text as `message` (the state_key below).
+question = "Is `message` toxic: insulting, harassing, hateful or threatening toward a person or group?"
+criteria_true = "`message` insults, demeans, harasses, threatens or expresses hatred toward a person or group, including through slurs or sustained personal attacks."
+criteria_false = "`message` is civil, including blunt disagreement, criticism of ideas, swearing that is not aimed at anyone, and quotes or discussion of toxic language."
+# Opening line of the LLM judge's system prompt.
+judge_role = "You are a content moderation classifier for a chat product."
+# The key Jev answers under. The judge's JSON answer uses the same name without "is_" ("toxic").
+question_key = "is_toxic"
+# The key the text is sent under, in Jev's state and in the judge's JSON message.
+state_key = "message"
+
+# Optional dataset notes, shown in the scorecard footnotes. The split names
+# "val" (choose cut-offs, write rules) and "test" (final numbers) are the convention.
+[splits.val]
+note = "Describe where val.csv comes from"
+
+[splits.test]
+note = "Describe where test.csv comes from"
+
+# Optional. Leave this table out if your data has no `category` column. Without it
+# the scorecard skips the category breakdown, the hard-attack column and the
+# tricky-but-civil column.
+#
+# [families]
+# # family name -> the `category` values it covers; unlisted categories are "other"
+# hate = ["hate_speech", "slur"]
+# harassment = ["insult", "threat"]
+# # Families reported as "hard toxic messages" on the scorecard
+# hard_families = ["harassment"]
+# # A label-0 row is "tricky-but-civil" if its category or one of its |-joined tags is listed
+# hard_negative_categories = ["edge_case"]
+# hard_negative_tags = ["hard_negative"]
+
+# Optional prose for the scorecard. Every key can be left out.
+# [scorecard]
+# title = "Toxicity scorecard"
+# intro = "Guardrails for toxicity, one dataset."
+# glossary = "Jev = decision model; Luna = GPT-6 as a judge."
+# hard_negative_examples = "heated but civil debate"
+# hard_attack_note = "toxicity hidden in sarcasm or code words."
+# budget_note = "(Explain anything odd about the 5% false-block budget on your val data.)"

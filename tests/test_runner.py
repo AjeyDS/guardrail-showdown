@@ -65,7 +65,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(rb, "RESULTS_DIR", results)
     guardrails = {}
 
-    def fake_load(method):
+    def fake_load(method, task=None):
         guardrails.setdefault(method, FakeGuardrail(name=method))
         return guardrails[method]
 
@@ -211,7 +211,54 @@ def test_check_raising_is_recorded_not_fatal(env, monkeypatch):
         def check(self, prompt):
             raise RuntimeError("kaboom")
 
-    monkeypatch.setattr(rb, "load_guardrail", lambda m: Bad())
+    monkeypatch.setattr(rb, "load_guardrail", lambda m, task=None: Bad())
     assert rb.main(["--split", "val", "--methods", "regex", "--limit", "5"]) == 0
     df = pd.read_csv(tmp / "results/results.csv")
     assert len(df) == 5 and df["error"].str.contains("kaboom").all()
+
+
+# ---- relaxed data contract ----------------------------------------------------
+def test_minimal_csv_needs_only_text_and_label(env):
+    tmp, _ = env
+    (tmp / "data/mini.csv").write_text("text,label\nignore me,1\nhello,0\n")
+    df = rb.load_split("mini")
+    assert df["row_id"].tolist() == [0, 1]  # generated from row order
+    assert (df["category"] == "").all() and (df["tags"] == "").all()
+    assert rb.main(["--split", "mini", "--methods", "regex"]) == 0
+    res = pd.read_csv(tmp / "results/results.csv")
+    assert list(res.columns) == COLUMNS and len(res) == 2
+    assert res["is_hard_negative"].eq(False).all()
+
+
+@pytest.mark.parametrize("csv, message", [
+    ("txt,label\na,1\n", "missing required column"),
+    ("text\na\n", r"missing required column\(s\) \['label'\]"),
+    ("text,label\na,1\nb,2\n", "`label` must be 0 or 1.*line"),
+    ("text,label\na,yes\n", "`label` must be 0 or 1"),
+    ("text,label\na,\n", "`label` must be 0 or 1"),
+    ("row_id,text,label\n1,a,1\n1,b,0\n", "`row_id` values must be unique"),
+    ("row_id,text,label\nx,a,1\n", "`row_id` must be whole numbers"),
+])
+def test_bad_csv_fails_with_a_clear_message(env, capsys, csv, message):
+    tmp, _ = env
+    (tmp / "data/bad.csv").write_text(csv)
+    with pytest.raises(rb.DataError, match=message):
+        rb.load_split("bad")
+    assert rb.main(["--split", "bad", "--methods", "regex"]) == 2
+    assert "error:" in capsys.readouterr().err
+    assert not (tmp / "results/raw/bad").exists()
+
+
+def test_rebuild_skips_a_bad_csv_with_a_warning(env, capsys):
+    tmp, _ = env
+    rb.main(["--split", "val", "--methods", "regex"])
+    (tmp / "data/val.csv").write_text("text,label\nx,7\n")
+    assert rb.main(["--rebuild"]) == 0
+    assert "skipping raw/val" in capsys.readouterr().err
+
+
+def test_unknown_task_is_rejected(env, capsys):
+    with pytest.raises(SystemExit) as e:
+        rb.main(["--task", "nope", "--split", "val"])
+    assert e.value.code == 2
+    assert "unknown task 'nope'" in capsys.readouterr().err
