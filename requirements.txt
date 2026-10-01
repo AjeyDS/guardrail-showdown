@@ -1,0 +1,14 @@
+python-dotenv>=1.0
+requests>=2.32
+pandas>=2.2
+pyarrow>=17
+datasets>=3.0
+numpy>=2.0
+scikit-learn>=1.5
+matplotlib>=3.9
+tqdm>=4.66
+torch>=2.6
+transformers>=4.45
+sentencepiece>=0.2
+protobuf>=5.0
+pytest>=8.0

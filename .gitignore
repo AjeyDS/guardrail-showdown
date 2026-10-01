@@ -1,0 +1,15 @@
+# secrets
+.env
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.ipynb_checkpoints/
+
+# local tooling
+.npm-cache/
+.DS_Store
+
+# launch drafts (not part of the repo)
+launch/
