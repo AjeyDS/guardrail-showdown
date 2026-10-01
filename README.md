@@ -74,7 +74,7 @@ Two test sets:
 
 **Confidence scores were not trustworthy.** When Jev or the free model said "60% sure", the message was almost always an attack. Jev was marketed on reliable confidence, but its scores were slightly less reliable than the free model's and Luna's.
 
-**Jev was 4x faster than Luna and half the cost.** That is useful, though well short of the 40x to 200x in its launch material, which compares it with much bigger models.
+**Jev was 4x faster than Luna and half the cost.** We picked Luna on purpose: it is one of the cheapest capable AI models, so it is the toughest comparison for Jev on speed and price. Bigger models would trail further on both, which is where the 40x to 200x in Jev's launch material comes from. Whether a bigger model would catch more attacks is a separate question we did not test.
 
 **The definition mattered more than the model.** Adding one sentence to our definition of "attack" took Luna from 32% to 93% on a 50-prompt trial run. Write yours down first.
 
